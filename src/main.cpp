@@ -19,6 +19,8 @@ int main(int argc, char* argv[]) {
 
         if (command == ".dbinfo") {
             db.print_db_info();
+        } else if (command == ".tables") {
+            db.list_tables();
         } else {
             std::cerr << "Unknown command: " << command << std::endl;
             return 1;

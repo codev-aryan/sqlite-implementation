@@ -9,4 +9,5 @@ private:
 public:
     explicit Database(const std::string& filename);
     void print_db_info();
+    void list_tables();
 };
