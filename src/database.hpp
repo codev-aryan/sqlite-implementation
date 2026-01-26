@@ -8,5 +8,5 @@ private:
 
 public:
     explicit Database(const std::string& filename);
-    void parse_header();
+    void print_db_info();
 };

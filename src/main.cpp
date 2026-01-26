@@ -18,7 +18,7 @@ int main(int argc, char* argv[]) {
         Database db(database_file_path);
 
         if (command == ".dbinfo") {
-            db.parse_header();
+            db.print_db_info();
         } else {
             std::cerr << "Unknown command: " << command << std::endl;
             return 1;
