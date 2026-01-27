@@ -1,9 +1,10 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <optional>
 
 struct SelectQuery {
-    std::string column;
+    std::vector<std::string> columns;
     std::string table;
 };
 

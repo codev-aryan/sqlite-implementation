@@ -2,45 +2,48 @@
 #include <sstream>
 #include <vector>
 #include <algorithm>
+#include <iostream>
 
 std::optional<SelectQuery> SQL::parse_select(const std::string& query) {
-    // Basic parser for "SELECT column FROM table" or "SELECT COUNT(*) FROM table"
-    std::stringstream ss(query);
+    // robust parsing for "SELECT col1, col2, col3 FROM table"
+    std::string q_upper = query;
+    std::transform(q_upper.begin(), q_upper.end(), q_upper.begin(), ::toupper);
+
+    size_t select_pos = q_upper.find("SELECT");
+    size_t from_pos = q_upper.find("FROM");
+
+    if (select_pos == std::string::npos || from_pos == std::string::npos || from_pos < select_pos) {
+        return std::nullopt;
+    }
+
+    // Extract columns part
+    size_t col_start = select_pos + 6;
+    std::string cols_str = query.substr(col_start, from_pos - col_start);
+    
+    // Extract table part
+    std::string table_str = query.substr(from_pos + 4);
+    
+    // Trim table name
+    size_t first = table_str.find_first_not_of(" \t\n\r");
+    size_t last = table_str.find_last_not_of(" \t\n\r");
+    if (first == std::string::npos) return std::nullopt;
+    std::string table_name = table_str.substr(first, (last - first + 1));
+
+    // Parse columns
+    std::vector<std::string> columns;
+    std::stringstream ss(cols_str);
     std::string segment;
-    std::vector<std::string> parts;
     
-    while (std::getline(ss, segment, ' ')) {
-        if (!segment.empty()) {
-            parts.push_back(segment);
+    while (std::getline(ss, segment, ',')) {
+        // Trim whitespace
+        size_t c_first = segment.find_first_not_of(" \t\n\r");
+        size_t c_last = segment.find_last_not_of(" \t\n\r");
+        if (c_first != std::string::npos) {
+            columns.push_back(segment.substr(c_first, (c_last - c_first + 1)));
         }
     }
 
-    if (parts.size() < 4) return std::nullopt;
-    
-    std::string op = parts[0];
-    std::transform(op.begin(), op.end(), op.begin(), ::toupper);
-    if (op != "SELECT") return std::nullopt;
+    if (columns.empty()) return std::nullopt;
 
-    // Determine basic structure matches SELECT ... FROM ...
-    // Parts: [SELECT, col, FROM, table]
-    // Simple check for FROM keyword
-    size_t from_index = 0;
-    for(size_t i = 1; i < parts.size(); i++) {
-        std::string upper = parts[i];
-        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
-        if (upper == "FROM") {
-            from_index = i;
-            break;
-        }
-    }
-
-    if (from_index == 0 || from_index + 1 >= parts.size()) return std::nullopt;
-
-    std::string column = parts[1]; // simplified: assumes single column, no spaces
-    // Handle "COUNT(*)" vs "name"
-    if (parts.size() > from_index + 1) {
-        return SelectQuery{column, parts[from_index + 1]};
-    }
-
-    return std::nullopt;
+    return SelectQuery{columns, table_name};
 }
