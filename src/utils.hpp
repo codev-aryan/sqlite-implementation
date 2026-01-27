@@ -14,7 +14,17 @@ public:
         return (static_cast<uint16_t>(bytes[0]) << 8) | bytes[1];
     }
 
-    // Returns {value, bytes_read}
+    static uint32_t parse_u32(const std::vector<char>& buffer, size_t offset) {
+        if (offset + 4 > buffer.size()) {
+            throw std::out_of_range("Buffer overflow reading u32");
+        }
+        auto* bytes = reinterpret_cast<const unsigned char*>(buffer.data() + offset);
+        return (static_cast<uint32_t>(bytes[0]) << 24) | 
+               (static_cast<uint32_t>(bytes[1]) << 16) | 
+               (static_cast<uint32_t>(bytes[2]) << 8) | 
+               bytes[3];
+    }
+
     static std::pair<uint64_t, int> read_varint(const std::vector<char>& buffer, size_t offset) {
         uint64_t value = 0;
         int bytes_read = 0;
