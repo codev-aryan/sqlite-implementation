@@ -5,6 +5,7 @@
 #include "sql.hpp"
 #include "record.hpp"
 #include <iostream>
+#include <algorithm>
 
 Database::Database(const std::string& filename) : pager(filename) {}
 
@@ -53,17 +54,20 @@ void Database::execute_sql(const std::string& query) {
     std::vector<char> page_header(root_page.begin(), root_page.begin() + 8);
     uint16_t row_count = BTree::parse_cell_count(page_header);
 
-    if (column_name == "COUNT(*)") {
+    // Normalize column name to upper case for checking special functions
+    std::string col_upper = column_name;
+    std::transform(col_upper.begin(), col_upper.end(), col_upper.begin(), ::toupper);
+
+    if (col_upper == "COUNT(*)") {
         std::cout << row_count << std::endl;
     } else {
-        // Find column index
         int col_idx = Schema::get_column_index(page_1, table_name, column_name);
         if (col_idx == -1) {
             std::cerr << "Column not found: " << column_name << std::endl;
             return;
         }
 
-        auto pointers = BTree::parse_cell_pointers(root_page, 0, row_count); // 0 offset for normal pages
+        auto pointers = BTree::parse_cell_pointers(root_page, 0, row_count);
         for (uint16_t ptr : pointers) {
             size_t cursor = ptr;
             auto [payload_size, s1] = Utils::read_varint(root_page, cursor);
