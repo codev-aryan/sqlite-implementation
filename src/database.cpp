@@ -3,6 +3,7 @@
 #include "btree.hpp"
 #include "schema.hpp"
 #include "sql.hpp"
+#include "record.hpp"
 #include <iostream>
 
 Database::Database(const std::string& filename) : pager(filename) {}
@@ -20,11 +21,8 @@ void Database::print_db_info() {
 void Database::list_tables() {
     std::vector<char> header = pager.read_bytes(0, 100);
     uint16_t page_size = Utils::parse_u16(header, 16);
-    
     std::vector<char> page_1 = pager.read_bytes(0, page_size);
-    
     auto tables = Schema::get_table_names(page_1);
-    
     for (size_t i = 0; i < tables.size(); ++i) {
         std::cout << tables[i] << (i == tables.size() - 1 ? "" : " ");
     }
@@ -32,20 +30,19 @@ void Database::list_tables() {
 }
 
 void Database::execute_sql(const std::string& query) {
-    auto table_name_opt = SQL::parse_select_count(query);
-    if (!table_name_opt) {
+    auto q_opt = SQL::parse_select(query);
+    if (!q_opt) {
         std::cerr << "Unsupported query: " << query << std::endl;
         return;
     }
-    std::string table_name = *table_name_opt;
+    std::string table_name = q_opt->table;
+    std::string column_name = q_opt->column;
 
     std::vector<char> header = pager.read_bytes(0, 100);
     uint16_t page_size = Utils::parse_u16(header, 16);
-    
     std::vector<char> page_1 = pager.read_bytes(0, page_size);
     
     int root_page_num = Schema::get_root_page_number(page_1, table_name);
-    
     if (root_page_num == -1) {
         std::cerr << "Table not found: " << table_name << std::endl;
         return;
@@ -53,9 +50,32 @@ void Database::execute_sql(const std::string& query) {
 
     size_t offset = (static_cast<size_t>(root_page_num) - 1) * page_size;
     std::vector<char> root_page = pager.read_bytes(offset, page_size);
-
     std::vector<char> page_header(root_page.begin(), root_page.begin() + 8);
     uint16_t row_count = BTree::parse_cell_count(page_header);
 
-    std::cout << row_count << std::endl;
+    if (column_name == "COUNT(*)") {
+        std::cout << row_count << std::endl;
+    } else {
+        // Find column index
+        int col_idx = Schema::get_column_index(page_1, table_name, column_name);
+        if (col_idx == -1) {
+            std::cerr << "Column not found: " << column_name << std::endl;
+            return;
+        }
+
+        auto pointers = BTree::parse_cell_pointers(root_page, 0, row_count); // 0 offset for normal pages
+        for (uint16_t ptr : pointers) {
+            size_t cursor = ptr;
+            auto [payload_size, s1] = Utils::read_varint(root_page, cursor);
+            cursor += s1;
+            auto [row_id, s2] = Utils::read_varint(root_page, cursor);
+            cursor += s2;
+            
+            std::vector<char> record_payload(root_page.begin() + cursor, 
+                                             root_page.begin() + cursor + payload_size);
+                                             
+            std::string val = Record::parse_column_to_string(record_payload, col_idx);
+            std::cout << val << std::endl;
+        }
+    }
 }
