@@ -6,6 +6,8 @@
 struct SelectQuery {
     std::vector<std::string> columns;
     std::string table;
+    std::string where_column;
+    std::string where_value;
 };
 
 class SQL {

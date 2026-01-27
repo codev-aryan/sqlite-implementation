@@ -54,7 +54,6 @@ void Database::execute_sql(const std::string& query) {
     std::vector<char> page_header(root_page.begin(), root_page.begin() + 8);
     uint16_t row_count = BTree::parse_cell_count(page_header);
 
-    // Check for COUNT(*)
     if (columns.size() == 1) {
         std::string col_upper = columns[0];
         std::transform(col_upper.begin(), col_upper.end(), col_upper.begin(), ::toupper);
@@ -64,7 +63,6 @@ void Database::execute_sql(const std::string& query) {
         }
     }
 
-    // Resolve Column Indices
     std::vector<int> col_indices;
     for (const auto& col_name : columns) {
         int idx = Schema::get_column_index(page_1, table_name, col_name);
@@ -75,7 +73,16 @@ void Database::execute_sql(const std::string& query) {
         col_indices.push_back(idx);
     }
 
-    // Iterate Rows
+    // Resolve WHERE clause column index if present
+    int where_col_idx = -1;
+    if (!q_opt->where_column.empty()) {
+        where_col_idx = Schema::get_column_index(page_1, table_name, q_opt->where_column);
+        if (where_col_idx == -1) {
+             std::cerr << "Filter column not found: " << q_opt->where_column << std::endl;
+             return;
+        }
+    }
+
     auto pointers = BTree::parse_cell_pointers(root_page, 0, row_count);
     for (uint16_t ptr : pointers) {
         size_t cursor = ptr;
@@ -87,6 +94,14 @@ void Database::execute_sql(const std::string& query) {
         std::vector<char> record_payload(root_page.begin() + cursor, 
                                          root_page.begin() + cursor + payload_size);
         
+        // Apply Filter
+        if (where_col_idx != -1) {
+            std::string val = Record::parse_column_to_string(record_payload, where_col_idx);
+            if (val != q_opt->where_value) {
+                continue; // Skip this row
+            }
+        }
+
         for (size_t i = 0; i < col_indices.size(); ++i) {
             std::string val = Record::parse_column_to_string(record_payload, col_indices[i]);
             std::cout << val << (i == col_indices.size() - 1 ? "" : "|");
