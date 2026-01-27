@@ -3,19 +3,26 @@
 #include <string>
 #include <vector>
 
+struct ColumnTarget {
+    int index;
+    bool is_primary_key;
+};
+
 struct QueryContext {
-    std::vector<int> col_indices;
+    std::vector<ColumnTarget> targets;
     int where_col_idx;
+    bool where_is_pk;
     std::string where_value;
+    bool count_mode; // New flag for COUNT(*)
 };
 
 class Database {
 private:
     Pager pager;
-    uint16_t page_size; // Cache page size
+    uint16_t page_size; 
 
-    // Recursive function to traverse B-Tree
-    void scan_table(uint32_t page_num, const QueryContext& ctx);
+    // Updated: accepts row_count reference
+    void scan_table(uint32_t page_num, const QueryContext& ctx, int& row_count);
 
 public:
     explicit Database(const std::string& filename);

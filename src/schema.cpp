@@ -5,17 +5,12 @@
 #include <sstream>
 #include <algorithm>
 
-// Helper to get array start for page 1 (Leaf Table, header at 100)
 static size_t page_1_ptr_start = 100 + 8;
 
 std::vector<std::string> Schema::get_table_names(const std::vector<char>& page_1_data) {
     std::vector<std::string> tables;
     size_t page_header_offset = 100;
-    
-    // Pass offset relative to buffer start for cell count
     uint16_t cell_count = BTree::parse_cell_count(page_1_data, page_header_offset);
-    
-    // Updated: Pass explicit array start offset (108)
     auto cell_pointers = BTree::parse_cell_pointers(page_1_data, page_1_ptr_start, cell_count);
     
     for (uint16_t offset : cell_pointers) {
@@ -56,7 +51,7 @@ int Schema::get_root_page_number(const std::vector<char>& page_1_data, const std
     return -1;
 }
 
-int Schema::get_column_index(const std::vector<char>& page_1_data, const std::string& table_name, const std::string& column_name) {
+ColumnInfo Schema::get_column_info(const std::vector<char>& page_1_data, const std::string& table_name, const std::string& column_name) {
     std::string create_sql = "";
     size_t page_header_offset = 100;
     uint16_t cell_count = BTree::parse_cell_count(page_1_data, page_header_offset);
@@ -77,11 +72,11 @@ int Schema::get_column_index(const std::vector<char>& page_1_data, const std::st
         }
     }
     
-    if (create_sql.empty()) return -1;
+    if (create_sql.empty()) return {-1, false};
 
     size_t start = create_sql.find('(');
     size_t end = create_sql.rfind(')');
-    if (start == std::string::npos || end == std::string::npos) return -1;
+    if (start == std::string::npos || end == std::string::npos) return {-1, false};
     
     std::string columns_def = create_sql.substr(start + 1, end - start - 1);
     std::stringstream ss(columns_def);
@@ -95,11 +90,25 @@ int Schema::get_column_index(const std::vector<char>& page_1_data, const std::st
         if (first == std::string::npos) continue;
         std::string col_def = segment.substr(first, (last - first + 1));
         std::string col_name = col_def.substr(0, col_def.find_first_of(" \t"));
+        
         if (col_name.size() >= 2 && (col_name.front() == '"' || col_name.front() == '`' || col_name.front() == '\'')) {
              col_name = col_name.substr(1, col_name.size() - 2);
         }
-        if (col_name == target) return index;
+        
+        if (col_name == target) {
+            // Check for PRIMARY KEY in the definition
+            // Basic case-insensitive check
+            std::string def_upper = col_def;
+            std::transform(def_upper.begin(), def_upper.end(), def_upper.begin(), ::toupper);
+            bool is_pk = def_upper.find("PRIMARY KEY") != std::string::npos;
+            return {index, is_pk};
+        }
         index++;
     }
-    return -1;
+    return {-1, false};
+}
+
+// Wrapper for backward compatibility (used in other files potentially)
+int Schema::get_column_index(const std::vector<char>& page_1_data, const std::string& table_name, const std::string& column_name) {
+    return get_column_info(page_1_data, table_name, column_name).index;
 }
