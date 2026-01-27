@@ -10,4 +10,5 @@ public:
     explicit Database(const std::string& filename);
     void print_db_info();
     void list_tables();
+    void execute_sql(const std::string& query);
 };

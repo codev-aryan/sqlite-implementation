@@ -22,8 +22,7 @@ int main(int argc, char* argv[]) {
         } else if (command == ".tables") {
             db.list_tables();
         } else {
-            std::cerr << "Unknown command: " << command << std::endl;
-            return 1;
+            db.execute_sql(command);
         }
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
