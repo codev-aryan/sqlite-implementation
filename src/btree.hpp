@@ -3,7 +3,9 @@
 #include <cstdint>
 
 enum class PageType {
+    InteriorIndex = 0x02,
     InteriorTable = 0x05,
+    LeafIndex = 0x0A,
     LeafTable = 0x0D,
     Unknown = 0x00
 };

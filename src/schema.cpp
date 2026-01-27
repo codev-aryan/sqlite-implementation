@@ -90,14 +90,10 @@ ColumnInfo Schema::get_column_info(const std::vector<char>& page_1_data, const s
         if (first == std::string::npos) continue;
         std::string col_def = segment.substr(first, (last - first + 1));
         std::string col_name = col_def.substr(0, col_def.find_first_of(" \t"));
-        
         if (col_name.size() >= 2 && (col_name.front() == '"' || col_name.front() == '`' || col_name.front() == '\'')) {
              col_name = col_name.substr(1, col_name.size() - 2);
         }
-        
         if (col_name == target) {
-            // Check for PRIMARY KEY in the definition
-            // Basic case-insensitive check
             std::string def_upper = col_def;
             std::transform(def_upper.begin(), def_upper.end(), def_upper.begin(), ::toupper);
             bool is_pk = def_upper.find("PRIMARY KEY") != std::string::npos;
@@ -108,7 +104,31 @@ ColumnInfo Schema::get_column_info(const std::vector<char>& page_1_data, const s
     return {-1, false};
 }
 
-// Wrapper for backward compatibility (used in other files potentially)
 int Schema::get_column_index(const std::vector<char>& page_1_data, const std::string& table_name, const std::string& column_name) {
     return get_column_info(page_1_data, table_name, column_name).index;
+}
+
+int Schema::get_index_root_page(const std::vector<char>& page_1_data, const std::string& index_name) {
+    size_t page_header_offset = 100;
+    uint16_t cell_count = BTree::parse_cell_count(page_1_data, page_header_offset);
+    auto cell_pointers = BTree::parse_cell_pointers(page_1_data, page_1_ptr_start, cell_count);
+    
+    for (uint16_t offset : cell_pointers) {
+        size_t cursor = offset;
+        auto [payload_size, s1] = Utils::read_varint(page_1_data, cursor);
+        cursor += s1;
+        auto [row_id, s2] = Utils::read_varint(page_1_data, cursor);
+        cursor += s2;
+        std::vector<char> record_payload(page_1_data.begin() + cursor, 
+                                         page_1_data.begin() + cursor + payload_size);
+        
+        // sqlite_schema: type(0), name(1), tbl_name(2), rootpage(3), sql(4)
+        std::string name = Record::parse_string_column(record_payload, 1);
+        std::string type = Record::parse_string_column(record_payload, 0);
+        
+        if (type == "index" && name == index_name) {
+             return static_cast<int>(Record::parse_int_column(record_payload, 3)); // rootpage
+        }
+    }
+    return -1;
 }

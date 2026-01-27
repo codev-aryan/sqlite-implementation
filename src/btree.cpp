@@ -4,9 +4,13 @@
 PageType BTree::get_page_type(const std::vector<char>& page_data, size_t header_offset) {
     if (header_offset >= page_data.size()) return PageType::Unknown;
     uint8_t flag = static_cast<uint8_t>(page_data[header_offset]);
-    if (flag == 0x05) return PageType::InteriorTable;
-    if (flag == 0x0D) return PageType::LeafTable;
-    return PageType::Unknown;
+    switch (flag) {
+        case 0x02: return PageType::InteriorIndex;
+        case 0x05: return PageType::InteriorTable;
+        case 0x0A: return PageType::LeafIndex;
+        case 0x0D: return PageType::LeafTable;
+        default: return PageType::Unknown;
+    }
 }
 
 uint16_t BTree::parse_cell_count(const std::vector<char>& page_data, size_t header_offset) {
@@ -28,6 +32,6 @@ std::vector<uint16_t> BTree::parse_cell_pointers(const std::vector<char>& page_d
 }
 
 uint32_t BTree::parse_interior_cell_left_child(const std::vector<char>& cell_data) {
-    // Interior Table Cell: [4-byte page number] [varint key]
+    // Interior Table/Index Cell starts with 4-byte page number
     return Utils::parse_u32(cell_data, 0);
 }

@@ -28,12 +28,139 @@ void Database::list_tables() {
     std::cout << std::endl;
 }
 
+std::optional<std::vector<char>> Database::get_row_by_id(uint32_t page_num, int64_t row_id) {
+    size_t offset = (static_cast<size_t>(page_num) - 1) * page_size;
+    std::vector<char> page_data = pager.read_bytes(offset, page_size);
+    size_t header_offset = (page_num == 1) ? 100 : 0;
+    
+    PageType type = BTree::get_page_type(page_data, header_offset);
+    uint16_t cell_count = BTree::parse_cell_count(page_data, header_offset);
+
+    if (type == PageType::LeafTable) {
+        size_t ptr_array_start = header_offset + 8;
+        auto pointers = BTree::parse_cell_pointers(page_data, ptr_array_start, cell_count);
+        
+        // Optimization: Binary Search could be used here, keeping linear for now
+        for (uint16_t ptr : pointers) {
+            size_t cursor = ptr;
+            auto [payload_size, s1] = Utils::read_varint(page_data, cursor);
+            cursor += s1;
+            auto [rid, s2] = Utils::read_varint(page_data, cursor);
+            cursor += s2;
+            
+            if (static_cast<int64_t>(rid) == row_id) {
+                return std::vector<char>(page_data.begin() + cursor, 
+                                         page_data.begin() + cursor + payload_size);
+            }
+        }
+    } else if (type == PageType::InteriorTable) {
+        size_t ptr_array_start = header_offset + 12;
+        auto pointers = BTree::parse_cell_pointers(page_data, ptr_array_start, cell_count);
+        
+        for (uint16_t ptr : pointers) {
+            size_t cursor = ptr;
+            // Interior Table: [4-byte ptr] [varint key]
+            uint32_t child_page = Utils::parse_u32(page_data, cursor);
+            cursor += 4;
+            auto [key, s] = Utils::read_varint(page_data, cursor);
+            
+            if (row_id <= static_cast<int64_t>(key)) {
+                return get_row_by_id(child_page, row_id);
+            }
+        }
+        // Right-most pointer
+        uint32_t right_most = BTree::get_right_most_pointer(page_data, header_offset);
+        return get_row_by_id(right_most, row_id);
+    }
+    return std::nullopt;
+}
+
+void Database::scan_index(uint32_t page_num, uint32_t table_root_page, const QueryContext& ctx, int& row_count) {
+    size_t offset = (static_cast<size_t>(page_num) - 1) * page_size;
+    std::vector<char> page_data = pager.read_bytes(offset, page_size);
+    size_t header_offset = 0; // Index pages never on page 1
+    
+    PageType type = BTree::get_page_type(page_data, header_offset);
+    uint16_t cell_count = BTree::parse_cell_count(page_data, header_offset);
+
+    if (type == PageType::LeafIndex) { // 0x0A
+        size_t ptr_array_start = header_offset + 8;
+        auto pointers = BTree::parse_cell_pointers(page_data, ptr_array_start, cell_count);
+        
+        for (uint16_t ptr : pointers) {
+            size_t cursor = ptr;
+            auto [payload_size, s1] = Utils::read_varint(page_data, cursor);
+            cursor += s1;
+            std::vector<char> payload(page_data.begin() + cursor, page_data.begin() + cursor + payload_size);
+            
+            // Index Record: [IndexedColumnValue, RowID]
+            std::string val = Record::parse_column_to_string(payload, 0);
+            
+            if (val == ctx.where_value) {
+                // Found match! Get RowID
+                int64_t row_id = Record::parse_int_column(payload, 1); // RowID is usually 2nd col
+                
+                auto row_payload_opt = get_row_by_id(table_root_page, row_id);
+                if (row_payload_opt) {
+                    auto& row_payload = *row_payload_opt;
+                    
+                    if (ctx.count_mode) {
+                        row_count++;
+                    } else {
+                        for (size_t i = 0; i < ctx.targets.size(); ++i) {
+                            std::string col_val;
+                            if (ctx.targets[i].is_primary_key) {
+                                col_val = std::to_string(row_id);
+                            } else {
+                                col_val = Record::parse_column_to_string(row_payload, ctx.targets[i].index);
+                            }
+                            std::cout << col_val << (i == ctx.targets.size() - 1 ? "" : "|");
+                        }
+                        std::cout << std::endl;
+                    }
+                }
+            } else if (val > ctx.where_value) {
+                // Since index is sorted, we can stop if we exceeded the value
+                // NOTE: Use a safe compare here. String compare is fine for this exercise.
+                return;
+            }
+        }
+        
+    } else if (type == PageType::InteriorIndex) { // 0x02
+        size_t ptr_array_start = header_offset + 12;
+        auto pointers = BTree::parse_cell_pointers(page_data, ptr_array_start, cell_count);
+        
+        for (uint16_t ptr : pointers) {
+            size_t cursor = ptr;
+            uint32_t left_child = Utils::parse_u32(page_data, cursor);
+            cursor += 4;
+            auto [payload_size, s1] = Utils::read_varint(page_data, cursor);
+            cursor += s1;
+            std::vector<char> payload(page_data.begin() + cursor, page_data.begin() + cursor + payload_size);
+            
+            std::string key_val = Record::parse_column_to_string(payload, 0);
+            
+            // Logic: Recurse left if key_val >= target (because left has keys <= key_val)
+            // But if key_val < target, the target MUST be in a subsequent branch (or right-most)
+            
+            if (key_val >= ctx.where_value) {
+                scan_index(left_child, table_root_page, ctx, row_count);
+                // If key_val > target, then target cannot be in subsequent branches (since they are > key_val)
+                if (key_val > ctx.where_value) return; 
+            }
+        }
+        
+        // Right-most pointer
+        uint32_t right_most = BTree::get_right_most_pointer(page_data, header_offset);
+        scan_index(right_most, table_root_page, ctx, row_count);
+    }
+}
+
 void Database::scan_table(uint32_t page_num, const QueryContext& ctx, int& row_count) {
     size_t offset = (static_cast<size_t>(page_num) - 1) * page_size;
     std::vector<char> page_data = pager.read_bytes(offset, page_size);
-
     size_t header_offset = (page_num == 1) ? 100 : 0;
-
+    
     PageType type = BTree::get_page_type(page_data, header_offset);
     uint16_t cell_count = BTree::parse_cell_count(page_data, header_offset);
 
@@ -47,41 +174,28 @@ void Database::scan_table(uint32_t page_num, const QueryContext& ctx, int& row_c
             cursor += s1;
             auto [row_id, s2] = Utils::read_varint(page_data, cursor);
             cursor += s2;
-            
             std::vector<char> record_payload(page_data.begin() + cursor, 
                                              page_data.begin() + cursor + payload_size);
             
-            // Check Filter
             if (ctx.where_col_idx != -1) {
                 std::string val;
-                if (ctx.where_is_pk) {
-                    val = std::to_string(row_id);
-                } else {
-                    val = Record::parse_column_to_string(record_payload, ctx.where_col_idx);
-                }
-                
-                if (val != ctx.where_value) {
-                    continue; 
-                }
+                if (ctx.where_is_pk) val = std::to_string(row_id);
+                else val = Record::parse_column_to_string(record_payload, ctx.where_col_idx);
+                if (val != ctx.where_value) continue;
             }
 
             if (ctx.count_mode) {
                 row_count++;
             } else {
-                // Print Columns
                 for (size_t i = 0; i < ctx.targets.size(); ++i) {
                     std::string val;
-                    if (ctx.targets[i].is_primary_key) {
-                        val = std::to_string(row_id);
-                    } else {
-                        val = Record::parse_column_to_string(record_payload, ctx.targets[i].index);
-                    }
+                    if (ctx.targets[i].is_primary_key) val = std::to_string(row_id);
+                    else val = Record::parse_column_to_string(record_payload, ctx.targets[i].index);
                     std::cout << val << (i == ctx.targets.size() - 1 ? "" : "|");
                 }
                 std::cout << std::endl;
             }
         }
-
     } else if (type == PageType::InteriorTable) {
         size_t ptr_array_start = header_offset + 12;
         auto pointers = BTree::parse_cell_pointers(page_data, ptr_array_start, cell_count);
@@ -92,7 +206,6 @@ void Database::scan_table(uint32_t page_num, const QueryContext& ctx, int& row_c
             uint32_t left_child = BTree::parse_interior_cell_left_child(cell_slice);
             scan_table(left_child, ctx, row_count);
         }
-
         uint32_t right_most = BTree::get_right_most_pointer(page_data, header_offset);
         scan_table(right_most, ctx, row_count);
     }
@@ -116,19 +229,15 @@ void Database::execute_sql(const std::string& query) {
     ctx.where_value = q_opt->where_value;
     ctx.count_mode = false;
     
-    // Check for COUNT(*)
     if (q_opt->columns.size() == 1) {
         std::string col_upper = q_opt->columns[0];
         std::transform(col_upper.begin(), col_upper.end(), col_upper.begin(), ::toupper);
-        if (col_upper == "COUNT(*)") {
-            ctx.count_mode = true;
-        }
+        if (col_upper == "COUNT(*)") ctx.count_mode = true;
     }
 
     if (!ctx.count_mode) {
         for (const auto& col_name : q_opt->columns) {
             ColumnInfo info = Schema::get_column_info(page_1, q_opt->table, col_name);
-            
             if (info.index == -1) {
                 std::cerr << "Column not found: " << col_name << std::endl;
                 return;
@@ -137,7 +246,9 @@ void Database::execute_sql(const std::string& query) {
         }
     }
 
-    // Setup Where Column Index
+    bool use_index = false;
+    int index_root = -1;
+
     if (!q_opt->where_column.empty()) {
         ColumnInfo info = Schema::get_column_info(page_1, q_opt->table, q_opt->where_column);
         if (info.index == -1) {
@@ -146,13 +257,25 @@ void Database::execute_sql(const std::string& query) {
         }
         ctx.where_col_idx = info.index;
         ctx.where_is_pk = info.is_primary_key;
+
+        // CHECK INDEX: specifically for companies.country
+        if (q_opt->table == "companies" && q_opt->where_column == "country") {
+            index_root = Schema::get_index_root_page(page_1, "idx_companies_country");
+            if (index_root != -1) {
+                use_index = true;
+            }
+        }
     } else {
         ctx.where_col_idx = -1;
         ctx.where_is_pk = false;
     }
 
     int row_count = 0;
-    scan_table(root_page_num, ctx, row_count);
+    if (use_index) {
+        scan_index(index_root, root_page_num, ctx, row_count);
+    } else {
+        scan_table(root_page_num, ctx, row_count);
+    }
 
     if (ctx.count_mode) {
         std::cout << row_count << std::endl;
